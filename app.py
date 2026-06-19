@@ -636,7 +636,7 @@ if os.path.exists(_logo_path_ui):
     with open(_logo_path_ui,"rb") as _lf: _lb=_lf.read()
     _logo_html=f'<img src="data:image/png;base64,{_b64.b64encode(_lb).decode()}" style="height:50px;margin-bottom:0.3em"/>'
 
-with gr.Blocks(title="Генератор Кредитных Отчетов", css=CSS) as demo:
+with gr.Blocks(css=CSS, title="Генератор Кредитных Отчетов", theme=gr.themes.Default(primary_hue="blue", neutral_hue="slate").set(body_background_fill="#1a1a2e", block_background_fill="#16213e", input_background_fill="#0f3460", button_primary_background_fill="#4472C4", button_primary_text_color="#ffffff")) as demo:
     gr.HTML(f'<div class="main-header">{_logo_html}<h1>ГЕНЕРАТОР КРЕДИТНЫХ ОТЧЕТОВ (MVP)</h1><p>Загрузите документы — получите кредитное заключение</p></div>')
     if has_env_key:
         gr.HTML('<div class="env-hint">Инфраструктура настроена.</div>'); api_key_input=gr.Textbox(value="",visible=False)
@@ -659,5 +659,4 @@ with gr.Blocks(title="Генератор Кредитных Отчетов", css
     reset_btn.click(fn=reset_all,inputs=[],outputs=[general_input,ifrs_input,output_file,output_summary])
     gr.HTML('<div style="text-align:center;margin-top:1em;padding:0.8em;border-top:1px solid rgba(255,255,255,0.1)"><p style="color:#64748b;font-size:0.85em">Denis Pokrovsky · OpenRouter · НРД API · python-pptx</p></div>')
 
-if __name__=="__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+if __name__=="__main__": demo.launch(server_name="0.0.0.0", server_port=7860)
