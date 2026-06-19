@@ -5,17 +5,19 @@ Two tariffs: "Стандарт" (NSD API + LLM commentary) and "Премиум" 
 
 import os, json, shutil, tempfile, re
 import gradio as gr
-import google.generativeai as genai
+from openai import OpenAI
 import requests as _requests
 from bs4 import BeautifulSoup as _BS
 
 # ---------------------------------------------------------------------------
-# Gemini setup
+# LLM setup — OpenRouter (works from Russian IPs, accesses Gemini/Claude/Llama)
 # ---------------------------------------------------------------------------
+
+_LLM_MODEL = "google/gemini-2.5-flash"  # or "anthropic/claude-sonnet-4", "meta-llama/llama-3.1-70b-instruct"
 
 def _get_api_keys(user_api_key: str = "") -> list[str]:
     keys = []
-    for env_var in ["GEMINI_API_KEY2", "GEMINI_API_KEY"]:
+    for env_var in ["OPENROUTER_KEY"]:
         k = os.environ.get(env_var, "").strip()
         if k: keys.append(k)
     if user_api_key.strip(): keys.append(user_api_key.strip())
@@ -24,9 +26,8 @@ def _get_api_keys(user_api_key: str = "") -> list[str]:
 def get_gemini_model(user_api_key: str = ""):
     keys = _get_api_keys(user_api_key)
     if not keys:
-        raise ValueError("Gemini API key not found. Set GEMINI_API_KEY in Secrets or paste in UI.")
-    genai.configure(api_key=keys[0])
-    return genai.GenerativeModel("gemini-2.5-flash")
+        raise ValueError("OpenRouter API key not found. Set OPENROUTER_KEY in Secrets or paste in UI.")
+    return keys[0]
 
 # ---------------------------------------------------------------------------
 # PDF → text extraction (with OCR fallback)
@@ -267,17 +268,21 @@ PLACEHOLDER_FINANCIAL_SUMMARY
 # ---------------------------------------------------------------------------
 
 def _call_gemini(prompt, user_api_key="", max_tokens=32768):
-    gen_config = genai.types.GenerationConfig(temperature=0.2, max_output_tokens=max_tokens)
     keys = _get_api_keys(user_api_key)
     last_error = None
     for i, key in enumerate(keys):
         try:
-            genai.configure(api_key=key)
-            m = genai.GenerativeModel("gemini-2.5-flash")
+            client = OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1")
             import time as _t; t0 = _t.time()
-            r = m.generate_content(prompt, generation_config=gen_config)
-            print(f"  Gemini ответ за {_t.time()-t0:.0f} сек, {len(r.text):,} символов", flush=True)
-            raw = r.text.strip()
+            r = client.chat.completions.create(
+                model=_LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=max_tokens,
+            )
+            text = r.choices[0].message.content
+            print(f"  LLM ответ за {_t.time()-t0:.0f} сек, {len(text):,} символов", flush=True)
+            raw = text.strip()
             if raw.startswith("```"): raw = raw.split("\n",1)[1]
             if raw.endswith("```"): raw = raw.rsplit("```",1)[0]
             return json.loads(raw.strip())
@@ -575,7 +580,7 @@ def process_standard(api_key, general_files, ifrs_files, progress=gr.Progress())
     if not rds: raise gr.Error("Не удалось загрузить отчёты.")
     progress(0.45, desc="Расчёт показателей (детерминированный)..."); analysis=nsd_to_analysis(rds,cn)
     if not analysis: raise gr.Error("Ошибка преобразования данных.")
-    progress(0.55, desc="Запрос комментариев у Gemini...")
+    progress(0.55, desc="Запрос комментариев у LLM...")
     try:
         fs=_financial_summary(analysis); commentary=analyze_commentary(general_texts,ifrs_texts,fs,api_key or ""); analysis=merge_commentary(analysis,commentary)
     except Exception as e: print(f"⚠️ Комментарии: {e}", flush=True)
@@ -589,11 +594,11 @@ def process_standard(api_key, general_files, ifrs_files, progress=gr.Progress())
 def process_premium(api_key, general_files, ifrs_files, progress=gr.Progress()):
     """Премиум: всё через LLM."""
     if not general_files and not ifrs_files: raise gr.Error("Загрузите хотя бы один документ.")
-    progress(0.05, desc="Настройка Gemini..."); model=get_gemini_model(api_key or "")
+    progress(0.05, desc="Настройка LLM..."); model=get_gemini_model(api_key or "")
     progress(0.10, desc="Извлечение текста..."); gt=extract_texts(general_files)
     progress(0.15, desc="Извлечение МСФО (OCR ~1-2 мин)..."); it=extract_texts(ifrs_files)
     if not gt and not it: raise gr.Error("Не удалось извлечь текст.")
-    progress(0.35, desc="Анализ Gemini AI (~30-60 сек)...")
+    progress(0.35, desc="Анализ LLM (~30-60 сек)...")
     try: analysis=analyze_with_gemini(model,gt,it,api_key or "")
     except json.JSONDecodeError as e: raise gr.Error(f"Невалидный JSON: {e}")
     except Exception as e: raise gr.Error(f"Ошибка: {e}")
@@ -611,7 +616,7 @@ def process_premium(api_key, general_files, ifrs_files, progress=gr.Progress()):
 # Gradio UI
 # ---------------------------------------------------------------------------
 
-has_env_key=bool(os.environ.get("GEMINI_API_KEY","").strip() or os.environ.get("GEMINI_API_KEY2","").strip())
+has_env_key=bool(os.environ.get("OPENROUTER_KEY","").strip())
 CSS="""
 .gradio-container{max-width:960px!important}
 .main-header{text-align:center;margin-bottom:0.5em}
@@ -631,12 +636,12 @@ if os.path.exists(_logo_path_ui):
     with open(_logo_path_ui,"rb") as _lf: _lb=_lf.read()
     _logo_html=f'<img src="data:image/png;base64,{_b64.b64encode(_lb).decode()}" style="height:50px;margin-bottom:0.3em"/>'
 
-with gr.Blocks(css=CSS,title="Генератор Кредитных Отчетов",theme=gr.themes.Default(primary_hue="blue",neutral_hue="slate").set(body_background_fill="#1a1a2e",block_background_fill="#16213e",input_background_fill="#0f3460",button_primary_background_fill="#4472C4",button_primary_text_color="#ffffff")) as demo:
+with gr.Blocks(title="Генератор Кредитных Отчетов") as demo:
     gr.HTML(f'<div class="main-header">{_logo_html}<h1>ГЕНЕРАТОР КРЕДИТНЫХ ОТЧЕТОВ (MVP)</h1><p>Загрузите документы — получите кредитное заключение</p></div>')
     if has_env_key:
         gr.HTML('<div class="env-hint">Инфраструктура настроена.</div>'); api_key_input=gr.Textbox(value="",visible=False)
     else:
-        api_key_input=gr.Textbox(label="Gemini API Key",placeholder="AIza...",type="password")
+        api_key_input=gr.Textbox(label="OpenRouter API Key",placeholder="sk-or-...",type="password")
     with gr.Row():
         with gr.Column(): general_input=gr.File(label="Общие документы",file_count="multiple",file_types=[".pdf",".txt",".docx"],type="filepath")
         with gr.Column(): ifrs_input=gr.File(label="Отчётность МСФО",file_count="multiple",file_types=[".pdf",".txt",".docx"],type="filepath")
@@ -644,7 +649,7 @@ with gr.Blocks(css=CSS,title="Генератор Кредитных Отчето
         standard_btn=gr.Button('Тариф "Стандарт" (НРД + LLM)',variant="primary",size="lg",scale=2,elem_classes=["standard-btn"])
         premium_btn=gr.Button('Тариф "Премиум" (полный LLM)',variant="primary",size="lg",scale=2,elem_classes=["premium-btn"])
         reset_btn=gr.Button("RESET!",size="lg",scale=1,elem_classes=["reset-btn"])
-    gr.HTML('<div class="env-hint"><b>Стандарт:</b> НРД! ИНН! ЛЛМ! <br/><b>Премиум:</b> ЛЛМ! ПДФ! ЛЛМ!.</div>')
+    gr.HTML('<div class="env-hint"><b>Стандарт:</b> финансовые данные из НРД (по ИНН), текст из LLM. Точные числа, быстро.<br/><b>Премиум:</b> весь анализ через LLM из загруженных PDF. Гибче, но числа могут отличаться.</div>')
     with gr.Row():
         with gr.Column(): output_file=gr.File(label="Скачать презентацию",interactive=False)
         with gr.Column(): output_summary=gr.Markdown(label="Предпросмотр")
@@ -652,6 +657,6 @@ with gr.Blocks(css=CSS,title="Генератор Кредитных Отчето
     premium_btn.click(fn=process_premium,inputs=[api_key_input,general_input,ifrs_input],outputs=[output_file,output_summary])
     def reset_all(): return None,None,None,""
     reset_btn.click(fn=reset_all,inputs=[],outputs=[general_input,ifrs_input,output_file,output_summary])
-    gr.HTML('<div style="text-align:center;margin-top:1em;padding:0.8em;border-top:1px solid rgba(255,255,255,0.1)"><p style="color:#64748b;font-size:0.85em">Denis Pokrovsky · Gemini 2.5 Flash · НРД API · python-pptx</p></div>')
+    gr.HTML('<div style="text-align:center;margin-top:1em;padding:0.8em;border-top:1px solid rgba(255,255,255,0.1)"><p style="color:#64748b;font-size:0.85em">Denis Pokrovsky · OpenRouter · НРД API · python-pptx</p></div>')
 
-if __name__=="__main__": demo.launch(server_name="0.0.0.0",server_port=7860)
+if __name__=="__main__": demo.launch(server_name="0.0.0.0",server_port=7860,css=CSS,theme=gr.themes.Default(primary_hue="blue",neutral_hue="slate").set(body_background_fill="#1a1a2e",block_background_fill="#16213e",input_background_fill="#0f3460",button_primary_background_fill="#4472C4",button_primary_text_color="#ffffff"))
