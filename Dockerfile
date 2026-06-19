@@ -14,9 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy app files (logo.png is optional)
 COPY app.py .
-COPY logo.png .
+COPY logo.pn[g] ./
 
+ENV GRADIO_SERVER_NAME="0.0.0.0"
+ENV GRADIO_SERVER_PORT="7860"
 EXPOSE 7860
 
 CMD ["python", "-u", "app.py"]
