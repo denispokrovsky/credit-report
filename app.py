@@ -5,7 +5,7 @@ Two tariffs: "Стандарт" (NSD API + LLM commentary) and "Премиум" 
 
 import os, json, shutil, tempfile, re
 import gradio as gr
-import google.generativeai as genai
+from openai import OpenAI
 import requests as _requests
 from bs4 import BeautifulSoup as _BS
 
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup as _BS
 
 def _get_api_keys(user_api_key: str = "") -> list[str]:
     keys = []
-    for env_var in ["GEMINI_API_KEY2", "GEMINI_API_KEY"]:
+    for env_var in ["OPENROUTER_KEY"]:
         k = os.environ.get(env_var, "").strip()
         if k: keys.append(k)
     if user_api_key.strip(): keys.append(user_api_key.strip())
@@ -24,9 +24,8 @@ def _get_api_keys(user_api_key: str = "") -> list[str]:
 def get_gemini_model(user_api_key: str = ""):
     keys = _get_api_keys(user_api_key)
     if not keys:
-        raise ValueError("Gemini API key not found. Set GEMINI_API_KEY in Secrets or paste in UI.")
-    genai.configure(api_key=keys[0])
-    return genai.GenerativeModel("gemini-2.5-flash")
+        raise ValueError("API key not found. Set OPENROUTER_KEY in Secrets or paste in UI.")
+    return keys[0]  # client created per-call
 
 # ---------------------------------------------------------------------------
 # PDF → text extraction (with OCR fallback)
@@ -267,17 +266,20 @@ PLACEHOLDER_FINANCIAL_SUMMARY
 # ---------------------------------------------------------------------------
 
 def _call_gemini(prompt, user_api_key="", max_tokens=32768):
-    gen_config = genai.types.GenerationConfig(temperature=0.2, max_output_tokens=max_tokens)
+    # config passed directly in API call
     keys = _get_api_keys(user_api_key)
     last_error = None
     for i, key in enumerate(keys):
         try:
-            genai.configure(api_key=key)
-            m = genai.GenerativeModel("gemini-2.5-flash")
+            client = OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1")
             import time as _t; t0 = _t.time()
-            r = m.generate_content(prompt, generation_config=gen_config)
-            print(f"  Gemini ответ за {_t.time()-t0:.0f} сек, {len(r.text):,} символов", flush=True)
-            raw = r.text.strip()
+            r = client.chat.completions.create(
+                model="google/gemini-2.5-flash",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2, max_tokens=max_tokens,
+            )
+            print(f"  Gemini ответ за {_t.time()-t0:.0f} сек, {len(r.choices[0].message.content):,} символов", flush=True)
+            raw = r.choices[0].message.content.strip()
             if raw.startswith("```"): raw = raw.split("\n",1)[1]
             if raw.endswith("```"): raw = raw.rsplit("```",1)[0]
             return json.loads(raw.strip())
@@ -611,7 +613,7 @@ def process_premium(api_key, general_files, ifrs_files, progress=gr.Progress()):
 # Gradio UI
 # ---------------------------------------------------------------------------
 
-has_env_key=bool(os.environ.get("GEMINI_API_KEY","").strip() or os.environ.get("GEMINI_API_KEY2","").strip())
+has_env_key=bool(os.environ.get("OPENROUTER_KEY","").strip())
 CSS="""
 .gradio-container{max-width:960px!important}
 .main-header{text-align:center;margin-bottom:0.5em}
